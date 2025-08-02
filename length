@@ -1,0 +1,52 @@
+#!/bin/bash
+
+# Count total number of files
+total_files=$(find . -maxdepth 1 -type f | wc -l)
+
+# Extract filenames without path, filtering out empty names
+filename_lengths=$(find . -maxdepth 1 -type f -printf "%f\n" | while read -r file; do 
+    # Remove path, then remove extension
+    basename=$(basename "$file")
+    name_without_ext="${basename%.*}"
+    
+    # Only output length if name is not empty
+    if [[ -n "$name_without_ext" ]]; then
+        echo ${#name_without_ext}
+    fi
+done)
+
+# Ensure we have valid lengths
+if [[ -z "$filename_lengths" ]]; then
+    echo "No valid filenames found."
+    exit 1
+fi
+
+# Calculate min length (ensuring non-zero)
+min_length=$(echo "$filename_lengths" | sort -n | head -n1)
+
+# Calculate max length
+max_length=$(echo "$filename_lengths" | sort -n | tail -n1)
+
+# Calculate average length
+avg_length=$(echo "$filename_lengths" | awk '{ total += $1; count++ } END { printf "%.2f", total/count }')
+
+# Calculate median length
+median_length=$(echo "$filename_lengths" | sort -n | awk '
+    { 
+        count++; 
+        arr[count] = $1; 
+    } 
+    END { 
+        if (count % 2) 
+            print arr[(count + 1) / 2]; 
+        else 
+            print (arr[count/2] + arr[count/2 + 1]) / 2 
+    }')
+
+# Print results
+echo "Total files: $total_files"
+echo "Minimum filename length: $min_length"
+echo "Maximum filename length: $max_length"
+echo "Average filename length: $avg_length"
+echo "Median filename length: $median_length"
+

@@ -1,0 +1,271 @@
+#!/bin/bash
+
+# ====================================================================================
+#
+#          FILE:  ia_download
+#
+#         USAGE:  ia_download
+#
+#   DESCRIPTION:  A final, robust script to download files from the Internet
+#                 Archive. This version gives the user full control over the
+#                 search query and uses a simplified logging system.
+#
+#       OPTIONS:  ---
+#  REQUIREMENTS:  jq, curl, internetarchive
+#          BUGS:  ---
+#         NOTES:  This is the final "Power User" version (v9.4). It uses the
+#                 proven search logic of v9.0/v9.3 and enhances the user
+#                 instructions for maximum clarity and power, as requested.
+#        AUTHOR:  Gemini
+#  ORGANIZATION:
+#       CREATED:  2025-07-29
+#      REVISION:  9.4
+#
+# ====================================================================================
+
+# --- Set Script Behavior ---
+# 'set -o pipefail' will cause a pipeline to fail if any command in it fails.
+set -o pipefail
+
+# --- Setup Log Files ---
+# Logging is simplified to only include an error log, as per user request.
+ERROR_LOG="error.log"
+
+# Overwrite/clear the error log at the start of the script.
+>"$ERROR_LOG"
+
+# --- Sanity Checks: Ensure required tools are installed ---
+echo "Version 9.4"
+echo "--- Checking for required tools... ---"
+if ! command -v jq &> /dev/null; then
+    echo "Error: 'jq' command-line tool not found.\nPlease install it using your system's package manager (e.g., sudo apt install jq)." >&2
+    echo "[$(date)] Error: 'jq' command-line tool not found." >> "$ERROR_LOG"
+    exit 1
+fi
+if ! command -v curl &> /dev/null; then
+    echo "Error: 'curl' command-line tool not found.\nPlease install it using your system's package manager (e.g., sudo apt install curl)." >&2
+    echo "[$(date)] Error: 'curl' command-line tool not found." >> "$ERROR_LOG"
+    exit 1
+fi
+if ! command -v ia &> /dev/null; then
+    echo "Error: 'internetarchive' command-line tool not found.\nPlease install it using: pipx install internetarchive" >&2
+    echo "[$(date)] Error: 'internetarchive' command-line tool not found." >> "$ERROR_LOG"
+    exit 1
+fi
+echo "--- All required tools are present. ---"
+echo
+
+# --- User Prompts ---
+
+# NEW (v9.4): Enhanced instructions based on user feedback for more powerful searching.
+echo "--- Search Criteria ---"
+echo "Enter your full Internet Archive search query below."
+echo
+echo "TIPS FOR BUILDING YOUR QUERY:"
+echo "  - To search for specific titles, use 'title:\"...\"'"
+echo "    Example: title:\"Big Blue Disk\""
+echo
+echo "  - To search for multiple titles, combine them with OR:"
+echo "    Example: title:\"ZZT\" OR title:\"MegaZeux\" OR title:\"Kroz\""
+echo
+echo "  - To search for keywords that might be in filenames or descriptions,"
+echo "    use a broad keyword search with parentheses:"
+echo "    Example: (zzt OR megazeux OR kroz)"
+echo "    (This finds items related to these terms, then you can filter by file type)"
+echo
+echo "  - To EXCLUDE a term, use 'AND -' followed by the condition."
+echo "    Example: (Softdisk) AND -title:(\"Loadstar\")"
+echo
+read -p "Full Search Query: " FULL_QUERY
+
+echo
+echo "--- Collection Selection ---"
+COLLECTION_OPTIONS=("texts" "movies" "audio" "software" "image")
+echo "Select one or more collections to search in."
+echo "Enter the numbers separated by spaces (e.g., 1 4)."
+echo "Press Enter to search ALL collections."
+for i in "${!COLLECTION_OPTIONS[@]}"; do
+    echo "  $((i+1))) ${COLLECTION_OPTIONS[$i]}"
+done
+read -p "Select Collections: " COLLECTION_SELECTIONS
+
+echo
+echo "--- File Type Selection ---"
+echo "Enter file extensions to download, separated by spaces (e.g., zip iso pdf)."
+read -p "Leave blank to download ALL file types: " FILE_TYPES
+
+# --- Main Logic ---
+echo
+echo "--- An error log will be created at: $ERROR_LOG ---"
+echo
+echo "============================================================"
+echo "Starting search..."
+echo "============================================================"
+echo
+
+# Step 1: Build the final query and URL-encode it.
+# Build the COLLECTION clause and store the names for the final summary
+COLLECTION_CLAUSE=""
+SELECTED_COLLECTION_NAMES="All"
+if [[ -n "$COLLECTION_SELECTIONS" ]]; then
+    SELECTED_COLLECTION_NAMES=""
+    for selection in $COLLECTION_SELECTIONS;
+    do
+        index=$((selection - 1))
+        if [[ $index -ge 0 && $index -lt ${#COLLECTION_OPTIONS[@]} ]]; then
+            collection_name=${COLLECTION_OPTIONS[$index]}
+            if [[ -n "$COLLECTION_CLAUSE" ]]; then
+                COLLECTION_CLAUSE+=" OR "
+                SELECTED_COLLECTION_NAMES+=", "
+            fi
+            COLLECTION_CLAUSE+="mediatype:$collection_name"
+            SELECTED_COLLECTION_NAMES+="$collection_name"
+        fi
+    done
+fi
+
+# We now combine the user's raw query with the collection filter.
+FINAL_QUERY="($FULL_QUERY) AND ($COLLECTION_CLAUSE)"
+echo "Constructed Search Query: $FINAL_QUERY"
+
+# The web API requires the query to be URL-encoded.
+ENCODED_QUERY=$(printf %s "$FINAL_QUERY" | jq -sRr @uri)
+
+# Step 2: Search the Internet Archive using the Web API and Paging
+echo "--> Step 1: Searching for items via Internet Archive API..."
+
+PAGE=1
+ALL_IDS=()
+while :; do
+    echo "    - Querying page $PAGE..."
+    API_URL="https://archive.org/advancedsearch.php?q=${ENCODED_QUERY}&fl[]=identifier&rows=100&page=${PAGE}&output=json"
+    
+    RESPONSE=$(curl --silent --fail "$API_URL" || echo "API_FETCH_FAILED")
+
+    if [[ "$RESPONSE" == "API_FETCH_FAILED" ]]; then
+        echo "    - Warning: Failed to fetch page $PAGE. It might be the last page." >&2
+        break
+    fi
+
+    PAGE_IDS=$(echo "$RESPONSE" | jq -r '.response.docs[]?.identifier')
+
+    if [[ -z "$PAGE_IDS" ]]; then
+        break
+    fi
+
+    while read -r id; do
+        ALL_IDS+=("$id")
+    done <<< "$PAGE_IDS"
+    
+    ((PAGE++))
+done
+
+if [ ${#ALL_IDS[@]} -eq 0 ]; then
+    echo "Search returned no results. Exiting."
+    exit 0
+fi
+
+TOTAL_ITEMS=${#ALL_IDS[@]}
+echo "--> Found a total of $TOTAL_ITEMS items to process."
+echo
+
+# Step 3: Loop through each found item, filter its files, and download.
+echo "--> Step 2: Processing each item and downloading matching files..."
+ITEM_COUNT=0
+SUCCESS_COUNT=0
+FAILURE_COUNT=0
+TOTAL_DOWNLOADS=0
+
+for id in "${ALL_IDS[@]}"; do
+    ((ITEM_COUNT++))
+    echo "------------------------------------------------------------"
+    echo "--> Processing item $ITEM_COUNT of $TOTAL_ITEMS: $id"
+
+    metadata_json=$(ia metadata "$id" || true)
+
+    if [[ -z "$metadata_json" ]]; then
+        echo "STATUS: *** FAILURE *** - Could not retrieve metadata for item '$id'." >&2
+        echo "[$(date)] Failed metadata fetch: $id" >> "$ERROR_LOG"
+        ((FAILURE_COUNT++))
+        continue
+    fi
+
+    title=$(echo "$metadata_json" | jq -r '.metadata.title // "N/A"')
+    creator=$(echo "$metadata_json" | jq -r '.metadata.creator // "N/A"')
+    year=$(echo "$metadata_json" | jq -r '.metadata.year // "N/A"')
+    echo "    Title:    $title"
+
+    all_files=$(echo "$metadata_json" | jq -r '.files[]?.name | select(type == "string")')
+    
+    files_to_download=()
+    if [[ -n "$FILE_TYPES" ]]; then
+        while IFS= read -r file; do
+            extension="${file##*.}"
+            for wanted_ext in $FILE_TYPES; do
+                if [[ "${extension,,}" == "${wanted_ext,,}" ]]; then
+                    files_to_download+=("$file")
+                    break
+                fi
+            done
+        done <<< "$all_files"
+    else
+        while IFS= read -r file; do
+            files_to_download+=("$file")
+        done <<< "$all_files"
+    fi
+
+    if [ ${#files_to_download[@]} -eq 0 ]; then
+        echo "    STATUS:   Success (No files with the specified extensions were found in this item)"
+        ((SUCCESS_COUNT++))
+        continue
+    fi
+
+    echo "    Found ${#files_to_download[@]} matching files to download:"
+    item_download_failed=false
+    for file_to_download in "${files_to_download[@]}"; do
+        encoded_file=$(printf %s "$file_to_download" | jq -sRr @uri)
+        download_url="https://archive.org/download/${id}/${encoded_file}"
+        
+        echo "      - Downloading: $file_to_download"
+        # Use '-#' to show a progress bar.
+        if ! curl -L -O --fail -# "$download_url"; then
+            echo # Add a newline after a failed download for cleaner output.
+            echo "FAILED to download file: $id/$file_to_download" >&2
+            echo "[$(date)] FAILED to download file: $id/$file_to_download" >> "$ERROR_LOG"
+            item_download_failed=true
+        else
+            ((TOTAL_DOWNLOADS++))
+        fi
+    done
+
+    if ! $item_download_failed; then
+        echo "    STATUS:   Success"
+        ((SUCCESS_COUNT++))
+    else
+        echo "STATUS: *** FAILURE *** (at least one file failed to download for item '$id')" >&2
+        ((FAILURE_COUNT++))
+    fi
+done
+
+echo "------------------------------------------------------------"
+echo
+echo "============================================================"
+echo "Download process complete!"
+echo
+echo "--- Run Summary ---"
+echo "Full Query Entered: ${FULL_QUERY:-None}"
+echo "Searched Collections: ${SELECTED_COLLECTION_NAMES:-All}"
+echo "File Types: ${FILE_TYPES:-All}"
+echo
+echo "--- Final Tally ---"
+echo "Items processed successfully: $SUCCESS_COUNT"
+echo "Items with failures:          $FAILURE_COUNT"
+echo "Total files downloaded:       $TOTAL_DOWNLOADS"
+echo
+if [[ $FAILURE_COUNT -gt 0 || -s "$ERROR_LOG" ]]; then
+    echo "A list of failed items has been saved to: $ERROR_LOG"
+fi
+echo "============================================================"
+
+exit 0
+

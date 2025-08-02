@@ -1,0 +1,123 @@
+#!/bin/bash
+# ==============================================================================
+# 8.3 Filename Normalizer Script (v3 - Strict)
+#
+# Description:
+# This script renames files in the current directory to strictly conform to the
+# historical 8.3 (MS-DOS/PC-DOS) filename convention. This version includes
+# proper character sanitization, checks for reserved device names, and fixes a
+# critical bug in conflict detection to prevent unnecessary renames.
+#
+# This version operates ONLY on the current directory and treats all files
+# with the same set of rules.
+#
+# Strict 8.3 Format Rules Enforced:
+# 1.  **Characters:** Only allows letters (A-Z), numbers (0-9), and the
+#     special characters: _ $ ~ ! # % & - { } ( ) @ ` '
+#     All other characters, including spaces, are removed.
+# 2.  **Structure:** Filename is 1-8 characters, extension is 0-3 characters.
+# 3.  **Case:** All filenames are converted to UPPERCASE.
+# 4.  **Reserved Names:** Checks for and avoids reserved MS-DOS device names
+#     (CON, PRN, AUX, NUL, COM1-9, LPT1-9) by prepending an underscore.
+# 5.  **Conflict Resolution:** If a file with the target name already exists
+#     (and it's a *different* file), a numeric suffix is added.
+#
+# Usage:
+# 1. Save this script as a file, for example, 'normalize.sh'.
+# 2. Make it executable with the command: chmod +x normalize.sh
+# 3. Place it in the directory with the files you want to rename.
+# 4. Run it with: ./normalize.sh
+#
+# WARNING:
+# This script PERMANENTLY renames files. It is highly recommended to
+# BACK UP your data or test this script in a copied directory first.
+# ==============================================================================
+
+# --- Script Start ---
+
+# Define the set of allowed characters for a valid 8.3 filename.
+# Defining it once as a variable makes the script cleaner and less error-prone.
+ALLOWED_CHARS='A-Z0-9_$~!#%&-{}()@`'\'
+
+# The 'for' loop iterates over every item ('*') in the current directory.
+for original_file in *; do
+
+    # --- 0. Filter Files to Process ---
+    # We use 'continue' to skip any items that don't meet our criteria.
+    # We skip:
+    #   - Directories or anything that isn't a regular file (`! -f`).
+    #   - The script file itself.
+    #   - Dotfiles (hidden files like .bashrc).
+    if [ ! -f "$original_file" ] || \
+       [ "$original_file" == "$(basename "$0")" ] || \
+       [[ "$original_file" == .* ]]; then
+        continue
+    fi
+
+    # --- 1. Separate Filename and Extension ---
+    filename="${original_file%.*}"
+    extension="${original_file##*.}"
+    if [ "$filename" == "$original_file" ]; then
+        extension=""
+    fi
+
+    # --- 2. Strict Sanitization, Uppercasing, and Truncation ---
+
+    # Sanitize by replacing any dots in the filename part with underscores.
+    filename="${filename//./_}"
+
+    # Convert to uppercase.
+    new_name="${filename^^}"
+    new_ext="${extension^^}"
+
+    # STRICT RULE: Remove all invalid MS-DOS characters using 'tr'.
+    new_name=$(echo "$new_name" | tr -cd "$ALLOWED_CHARS")
+    new_ext=$(echo "$new_ext" | tr -cd "$ALLOWED_CHARS")
+
+
+    # Truncate to 8.3 length *after* sanitization.
+    new_name="${new_name:0:8}"
+    new_ext="${new_ext:0:3}"
+
+    # STRICT RULE: Check for reserved MS-DOS device names.
+    if [[ "$new_name" =~ ^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$ ]]; then
+        # If it's a reserved name, prepend an underscore to make it valid.
+        new_name="_${new_name:0:7}" # Prepend and re-truncate to 8 chars
+    fi
+
+    # If, after all sanitization, the name is empty, skip the file.
+    if [ -z "$new_name" ]; then
+        echo "Skipping '$original_file': Filename became empty after sanitization."
+        continue
+    fi
+
+    # --- 3. Assemble the New Filename and Handle Conflicts ---
+    if [ -n "$new_ext" ]; then
+        target_name="$new_name.$new_ext"
+    else
+        target_name="$new_name"
+    fi
+
+    final_name="$target_name"
+    counter=1
+
+    # Conflict check: loop if a file exists with the target name AND it's not the original file.
+    while [ -e "$final_name" ] && [ "$final_name" != "$original_file" ]; do
+        ((counter++))
+        if [ -n "$new_ext" ]; then
+             final_name="$new_name.$new_ext.$counter"
+        else
+             final_name="$new_name.$counter"
+        fi
+    done
+
+    # --- 4. Perform the Rename ---
+    if [ "$original_file" != "$final_name" ]; then
+        mv -v "$original_file" "$final_name"
+    fi
+done
+
+echo ""
+echo "Normalization complete."
+# --- Script End ---
+

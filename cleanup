@@ -1,0 +1,59 @@
+#!/bin/bash
+# ==============================================================================
+# Suffix Cleanup Script (One-Time Use)
+#
+# Description:
+# This script is designed to fix a specific bug from a previous version of the
+# normalizer script. It finds files that were incorrectly renamed with a
+# numeric suffix (e.g., FILENAME.EXT.2) and attempts to revert them to their
+# original name (FILENAME.EXT).
+#
+# The script will only perform the rename if the target name does not already
+# exist, making it safe to run.
+#
+# Usage:
+#   To run on the current directory only:
+#   ./cleanup.sh
+#
+#   To run on the current directory AND all subdirectories:
+#   ./cleanup.sh -d
+# ==============================================================================
+
+# --- Argument Parsing for Recursive Mode ---
+MAX_DEPTH_FLAG="-maxdepth 1"
+if [ "$1" == "-d" ] || [ "$1" == "--sub-directories" ]; then
+    MAX_DEPTH_FLAG=""
+    echo "Cleanup - Recursive mode enabled."
+else
+    echo "Cleanup - Standard mode enabled."
+fi
+echo "---"
+
+# Use 'find' to locate all files.
+find . $MAX_DEPTH_FLAG -type f -print0 | while IFS= read -r -d $'\0' file_with_suffix; do
+
+    # Check if the filename ends in a dot followed by one or more digits.
+    # The '=~' operator is for regular expression matching.
+    # '\.[0-9]+$' means: a literal dot, followed by one or more digits, at the end of the string.
+    if [[ "$file_with_suffix" =~ \.[0-9]+$ ]]; then
+
+        # If it matches, extract the intended original name by stripping the suffix.
+        # This removes the shortest match of '.*' (a dot and anything after it) from the end.
+        intended_original_name="${file_with_suffix%.*}"
+
+        # SAFETY CHECK: Before we rename, we MUST check that the intended original name
+        # does not already exist. This prevents us from overwriting a valid file.
+        if [ ! -e "$intended_original_name" ]; then
+            # If the original name is free, we can safely rename the file back.
+            mv -v "$file_with_suffix" "$intended_original_name"
+        else
+            # If the original name already exists, we can't safely revert.
+            # We print a message and leave the file as-is.
+            echo "Skipping '$file_with_suffix': Target '$intended_original_name' already exists."
+        fi
+    fi
+done
+
+echo ""
+echo "Cleanup complete."
+

@@ -1,0 +1,153 @@
+#!/bin/bash
+# ==============================================================================
+# Filename Sanitizer Script (Simple Version)
+#
+# Description:
+# This script renames files in the CURRENT DIRECTORY ONLY to a clean,
+# standardized, and web-friendly format. It applies a single, strict set of
+# sanitization rules to all files it finds.
+#
+# This version is intentionally simplified to remove recursive (sub-directory)
+# functionality and special handling for different file types.
+#
+# --- Sanitization Rules ---
+#
+# 1. Case: All filenames are converted to LOWERCASE.
+# 2. Characters: Only allows lowercase letters (a-z), numbers (0-9), and
+#    the underscore character (_).
+# 3. Special Characters: All other characters (including spaces, punctuation,
+#    etc.) are converted to a single dash '-'.
+# 4. Cleanup: Multiple dashes or underscores in a row are "squeezed" into a
+#    single instance, and '_-_' is collapsed to '-'.
+# 5. Character Encoding: Handles URL-encoded and Unicode characters.
+# 6. Conflict Resolution: If a sanitized filename already exists, a numeric
+#    suffix is added after the extension (e.g., 'filename.ext.2').
+#
+# Filesystem Impact:
+# - This script PERMANENTLY renames files in the current directory.
+# - It is highly recommended to BACK UP your data first.
+# ==============================================================================
+
+# --- Configuration & Option Parsing ---
+
+# Default basename length is empty, meaning unlimited.
+MAX_LEN=""
+
+# Function to display usage instructions
+usage() {
+    echo "Usage: $0 [-l MAX_LENGTH]"
+    echo "  Sanitizes filenames in the current directory."
+    echo
+    echo "  Options:"
+    echo "    -l MAX_LENGTH   Optional. Truncates the basename (the part before the"
+    echo "                    extension) to a maximum of MAX_LENGTH characters."
+    echo "    -h              Display this help message."
+    exit 1
+}
+
+# Use getopts to parse command-line options. Note that '-d' is no longer here.
+while getopts ":l:h" opt; do
+    case ${opt} in
+        l)
+            if [[ $OPTARG =~ ^[1-9][0-9]*$ ]]; then
+                MAX_LEN=$OPTARG
+            else
+                echo "Error: Invalid length specified for -l. Must be a positive number." >&2
+                usage
+            fi
+            ;;
+        h)
+            usage
+            ;;
+        \?)
+            echo "Invalid Option: -$OPTARG" >&2
+            usage
+            ;;
+        :)
+            echo "Invalid Option: -$OPTARG requires an argument" >&2
+            usage
+            ;;
+    esac
+done
+
+# --- Main Script Logic ---
+
+if [ -n "$MAX_LEN" ]; then
+    echo "Running in Sanitation and Truncation mode (max length: $MAX_LEN)..."
+else
+    echo "Running in Sanitation-Only mode. No length limit will be enforced."
+fi
+echo "---"
+
+# The 'find' command is now hard-coded to be non-recursive with '-maxdepth 1'.
+# It finds all files (-type f) in the current directory only, excluding the
+# script itself and any hidden "dotfiles".
+find . -maxdepth 1 -type f -not -path "./$(basename "$0")" -not -name ".*" -print0 | while IFS= read -r -d $'\0' full_path; do
+
+    # --- 1. Separate Filename Components ---
+    # Since we are not in subdirectories, we don't need complex path handling.
+    original_file=$(basename "$full_path")
+
+    basename="${original_file%.*}"
+    extension="${original_file##*.}"
+
+    if [ "$basename" == "$original_file" ]; then
+        extension=""
+    elif [ -z "$basename" ]; then
+        basename="$original_file"
+        extension=""
+    fi
+
+    # --- 2. Sanitize Basename and Extension ---
+    # This is the single, strict sanitization pipeline applied to ALL files.
+    new_name=$(printf '%b' "${basename//%/\\x}")
+    new_name=$(echo "$new_name" | iconv -f UTF-8 -t ASCII//TRANSLIT -c)
+    new_name="${new_name,,}"
+    new_name=$(echo "$new_name" | sed 's/[^a-z0-9_]/-/g')
+    new_name=$(echo "$new_name" | sed 's/_-_/-/g')
+    new_name=$(echo "$new_name" | sed 's/-\{2,\}/-/g')
+    new_name=$(echo "$new_name" | sed 's/\_{2,\}/_/g')
+    new_name=$(echo "$new_name" | sed 's/^[_-]//;s/[_-]$//')
+
+    new_ext="${extension,,}"
+    new_ext=$(echo "$new_ext" | sed 's/[^a-z0-9]//g')
+    new_ext="${new_ext:0:3}"
+
+    # --- 3. Optional Truncation & Assembly ---
+    if [ -n "$MAX_LEN" ]; then
+        new_name="${new_name:0:$MAX_LEN}"
+        new_name=$(echo "$new_name" | sed 's/[_-]$//')
+    fi
+
+    if [ -z "$new_name" ]; then
+        echo "Skipping '$original_file': Filename became empty after sanitization."
+        continue
+    fi
+
+    if [ -n "$new_ext" ]; then
+        target_name="$new_name.$new_ext"
+    else
+        target_name="$new_name"
+    fi
+
+    # --- 4. Handle Filename Conflicts ---
+    final_name="$target_name"
+    counter=1
+
+    while [ -e "$final_name" ] && [ "$final_name" != "$original_file" ]; do
+        ((counter++))
+        # This is the conflict style you requested: 'filename.ext.2'
+        final_name="$target_name.$counter"
+    done
+
+    # --- 5. Perform the Rename ---
+    if [ "$original_file" != "$final_name" ]; then
+        # The '--' ensures filenames starting with a dash are handled safely.
+        mv -v -- "$original_file" "$final_name"
+    fi
+done
+
+echo "---"
+echo "Normalization complete."
+# --- Script End ---
+

@@ -1,0 +1,292 @@
+#!/bin/bash
+
+# -----------------------------------------------------------------------------
+# ia-extract.sh - Intelligent Archive Extractor v3.4
+#
+# Author: Gemini
+# Date: 2024-07-29
+#
+# Description:
+# This script intelligently extracts various archive types (zip, 7z, tar, iso,
+# etc.) in the current directory. It's designed to avoid creating unnecessary
+# subdirectories and provides a safe dry-run mode.
+#
+# --- Features ---
+# 1. Checks for the required '7z' command and provides installation instructions.
+# 2. Sanitizes filenames and directories by converting spaces to underscores.
+# 3. Skips archives if an output directory with the same (sanitized) name already exists.
+# 4. If an archive contains just one file, it extracts and renames it, but skips if
+#    the target file already exists.
+# 5. If an archive contains a single root folder, it extracts the *contents* of
+#    that folder, preventing paths like 'dirname/dirname/'.
+# 6. If an archive contains multiple files/folders at the root, it creates a
+#    sanitized subdirectory and extracts the contents there.
+# 7. Recursively finds and extracts archives within the newly extracted content.
+# 8. Includes a --dry-run option to preview actions without making changes.
+# 9. Asks ONCE at the start if source archives should be deleted upon success.
+#    (Deletion command is still disabled by default for safety).
+#
+# --- v3.4 Change Log ---
+# - CRITICAL FIX: Replaced the flawed root item counting logic from v3.3.
+# - Implemented a much more robust method that correctly identifies unique
+#   top-level items in an archive, restoring correct extraction behavior and
+#   preventing files from being extracted to the wrong directory.
+#
+# --- Usage ---
+# 1. Place this script in the directory with your archives.
+# 2. Make it executable: chmod +x ia-extract.sh
+# 3. Run it normally:   ./ia-extract.sh
+# 4. Run in dry-run mode to see what would happen: ./ia-extract.sh --dry-run
+#
+# -----------------------------------------------------------------------------
+
+# --- Configuration & Argument Parsing ---
+
+DRY_RUN=false
+DELETE_ARCHIVES=false
+echo "Version 3.4"
+
+if [[ "$1" == "--dry-run" ]]; then
+  DRY_RUN=true
+  echo "--- DRY RUN MODE ACTIVATED ---"
+  echo "No files will be extracted or created. Actions will be simulated."
+  echo ""
+fi
+
+# --- Dependency Check ---
+if ! command -v 7z &> /dev/null; then
+    echo "Error: '7z' command not found."
+    echo "This script requires p7zip-full."
+    echo ""
+    echo "Please install it using your package manager:"
+    echo "For Debian/Ubuntu: sudo apt-get update && sudo apt-get install p7zip-full"
+    echo "For Fedora:         sudo dnf install p7zip p7zip-plugins"
+    exit 1
+fi
+
+# --- Helper Functions ---
+
+sanitize_name() {
+    echo "$1" | tr ' ' '_'
+}
+
+rename_with_underscores() {
+    local target_dir="$1"
+    if [[ ! -d "$target_dir" ]]; then return; fi
+
+    echo "Info: Checking for and renaming files with spaces in '$target_dir'..."
+    find "$target_dir" -depth -name '* *' | while IFS= read -r item; do
+        local new_name
+        new_name="$(dirname "$item")/$(sanitize_name "$(basename "$item")")"
+        if [[ "$item" != "$new_name" ]]; then
+            if [[ "$DRY_RUN" == "true" ]]; then
+                echo "[DRY RUN] Would rename '$item' to '$new_name'"
+            else
+                mv -n "$item" "$new_name"
+            fi
+        fi
+    done
+}
+
+
+# --- The Core Extraction Function ---
+extract_archive() {
+    local archive_file="$1"
+
+    if [[ ! -f "$archive_file" ]]; then
+        echo "Warning: File '$archive_file' not found. Skipping."
+        return
+    fi
+
+    local output_dir_base
+    output_dir_base="$(basename "$archive_file" | sed 's/\.[^.]*$//')"
+    local output_dir_check
+    output_dir_check="$(sanitize_name "$output_dir_base")"
+    if [[ -d "$output_dir_check" ]]; then
+        echo "Info: Skipping '$archive_file' because output directory '$output_dir_check/' already exists."
+        return
+    fi
+
+    echo "----------------------------------------------------"
+    echo "Processing: $archive_file"
+    echo "----------------------------------------------------"
+
+    # --- Analyze Archive Contents (Robust Method v3.4) ---
+    local archive_listing
+    archive_listing=$(7z l -slt "$archive_file")
+
+    # Get a clean list of all paths within the archive.
+    local paths
+    paths=$(echo "$archive_listing" | grep "Path =" | sed 's/Path = //')
+
+    # If there are no paths, it's an empty or invalid archive.
+    if [[ -z "$paths" ]]; then
+        echo "Warning: Could not list contents of '$archive_file'. It may be empty or corrupt. Skipping."
+        return
+    fi
+
+    # Count all file/folder items inside the archive.
+    local all_items_count
+    all_items_count=$(echo "$paths" | wc -l)
+
+    # To find the number of root items, we get the first path component of each
+    # line, then count the number of unique components. This is the most
+    # reliable way to determine the root structure.
+    local root_items_count
+    root_items_count=$(echo "$paths" | sed 's/\/.*//' | sort -u | wc -l)
+
+
+    # --- Decide Extraction Strategy ---
+
+    # Case 1: The archive contains only one file in total.
+    if [[ "$all_items_count" -eq 1 ]]; then
+        local original_filename
+        original_filename=$(echo "$paths") # The only path is the filename
+        local sanitized_filename
+        sanitized_filename=$(sanitize_name "$original_filename")
+
+        if [[ -e "$sanitized_filename" ]]; then
+            echo "Info: Skipping '$archive_file' because target file '$sanitized_filename' already exists."
+            return
+        fi
+
+        echo "Info: Archive contains a single file. Strategy: Extract and rename to current directory."
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo "[DRY RUN] Would extract '$original_filename' and rename to '$sanitized_filename'."
+        else
+            7z e -y "$archive_file" -o.
+            if [[ $? -eq 0 ]]; then
+                if [[ "$original_filename" != "$sanitized_filename" ]]; then
+                    mv -n "$original_filename" "$sanitized_filename"
+                fi
+                echo "Success: Extracted and sanitized single file from '$archive_file'."
+                handle_deletion "$archive_file"
+            else
+                echo "Error: Failed to extract single file from '$archive_file'."
+            fi
+        fi
+
+    # Case 2: The archive's root contains a single directory.
+    elif [[ "$root_items_count" -eq 1 ]]; then
+        echo "Info: Archive has a single root directory. Strategy: Extract, rename all, then move contents up."
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo "[DRY RUN] Would extract contents of '$archive_file' into the current directory."
+            echo "[DRY RUN] Would then rename any files/dirs with spaces to use underscores."
+        else
+            local temp_dir="__temp_$(basename "$archive_file")"
+            mkdir -p "$temp_dir"
+            7z x -y "$archive_file" -o"$temp_dir"
+            if [[ $? -eq 0 ]]; then
+                rename_with_underscores "$temp_dir"
+                local inner_dir
+                inner_dir=$(find "$temp_dir" -mindepth 1 -maxdepth 1 -type d)
+                if [[ -d "$inner_dir" ]]; then
+                    mv "$inner_dir"/* .
+                    echo "Success: Extracted and sanitized contents from '$archive_file'."
+                else
+                    mv "$temp_dir"/* .
+                fi
+                rm -rf "$temp_dir"
+                handle_deletion "$archive_file"
+            else
+                echo "Error: Failed to extract '$archive_file'."
+                rm -rf "$temp_dir"
+            fi
+        fi
+
+    # Case 3: The archive contains multiple files/folders at the root.
+    else
+        local output_dir
+        output_dir="$output_dir_check" # Use the sanitized name we created earlier.
+        echo "Info: Archive has multiple root items. Strategy: Extract to sanitized subdirectory: '$output_dir/'"
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo "[DRY RUN] Would create directory '$output_dir/' and extract '$archive_file' into it."
+            echo "[DRY RUN] Would then rename any files/dirs with spaces to use underscores inside '$output_dir/'."
+            find_and_extract_recursively "$output_dir"
+        else
+            mkdir -p "$output_dir"
+            7z x -y "$archive_file" -o"$output_dir"
+            if [[ $? -eq 0 ]]; then
+                rename_with_underscores "$output_dir"
+                echo "Success: Extracted '$archive_file' to '$output_dir/'."
+                find_and_extract_recursively "$output_dir"
+                handle_deletion "$archive_file"
+            else
+                echo "Error: Failed to extract '$archive_file'."
+            fi
+        fi
+    fi
+}
+
+# --- Recursive Search Function ---
+find_and_extract_recursively() {
+    local search_dir="$1"
+    echo "--- Recursively searching for archives in '$search_dir' ---"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[DRY RUN] Would search for nested archives inside '$search_dir/'."
+        return
+    fi
+
+    find "$search_dir" -type f \( \
+        -iname "*.zip" -o -iname "*.7z" -o -iname "*.rar" -o \
+        -iname "*.tar" -o -iname "*.gz" -o -iname "*.bz2" -o -iname "*.xz" -o \
+        -iname "*.iso" -o -iname "*.img" -o -iname "*.ima" -o -iname "*.dsk" -o \
+        -iname "*.arc" -o -iname "*.arj" -o -iname "*.lha" -o -iname "*.lzh" \
+        \) | while read -r nested_archive; do
+        
+        if [[ -f "$nested_archive" ]]; then
+            echo "Found nested archive: $nested_archive"
+            pushd "$(dirname "$nested_archive")" > /dev/null
+            extract_archive "$(basename "$nested_archive")"
+            popd > /dev/null
+        fi
+    done
+}
+
+# --- Deletion Handler Function ---
+handle_deletion() {
+    local file_to_delete="$1"
+    
+    if [[ "$DELETE_ARCHIVES" != "true" ]]; then
+        return
+    fi
+    
+    echo "Info: Deleting source archive '$file_to_delete' as requested."
+    # --- SAFETY FIRST ---
+    # To enable deletion, remove the '#' from the beginning of the next line.
+    # rm -f "$file_to_delete"
+    echo "Note: Deletion is currently disabled. To enable, edit this script and uncomment the 'rm' command."
+}
+
+
+# --- Main Script Body ---
+echo "Starting Intelligent Archive Extractor..."
+
+if [[ "$DRY_RUN" == "false" ]]; then
+    read -p "Do you want to delete source archives after successful extraction? (y/N) " -n 1 -r REPLY
+    echo 
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        DELETE_ARCHIVES=true
+        echo "--- Deletion of source archives is ENABLED for this session. ---"
+    else
+        echo "--- Deletion of source archives is DISABLED for this session. ---"
+    fi
+    echo "" 
+fi
+
+
+find . -maxdepth 1 -type f \( \
+    -iname "*.zip" -o -iname "*.7z" -o -iname "*.rar" -o \
+    -iname "*.tar" -o -iname "*.gz" -o -iname "*.bz2" -o -iname "*.xz" -o \
+    -iname "*.iso" -o -iname "*.img" -o -iname "*.ima" -o -iname "*.dsk" -o \
+    -iname "*.arc" -o -iname "*.arj" -o -iname "*.lha" -o -iname "*.lzh" \
+    \) | while read -r archive; do
+    
+    extract_archive "$archive"
+
+done
+
+echo ""
+echo "Extraction complete."
+

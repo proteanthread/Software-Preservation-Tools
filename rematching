@@ -1,0 +1,103 @@
+#!/bin/bash
+
+# ==============================================================================
+#
+# Title:         rematching.sh
+# Description:   This script compares all filenames in a specified directory
+#                with all filenames in the current directory. It then deletes
+#                the files in the CURRENT directory that have a matching
+#                filename.
+#
+# Usage:         ./rematching.sh /path/to/directory
+#
+# Author:        Gemini
+# Date:          2025-08-02
+#
+# ==============================================================================
+
+# --- PRE-FLIGHT CHECKS AND VARIABLE SETUP ---
+
+# This is our first and most important safeguard. We get the absolute path of the
+# current directory and store it in a variable. An absolute path starts from the
+# root directory (e.g., /home/user/documents), which is a unique and unambiguous
+# location. We use this to ensure we are always deleting from the directory where
+# the script was run.
+# 'pwd' stands for 'print working directory'.
+CURRENT_DIR=$(pwd)
+
+# The script requires exactly one argument: the path to the directory we are
+# comparing against. '$#' is a special variable in bash that holds the number
+# of arguments passed to the script. We check if this number is not equal to 1.
+# The '-ne' operator means 'not equal'.
+if [ "$#" -ne 1 ]; then
+    # If the number of arguments is incorrect, we print a usage message to the
+    # user, explaining how to run the script correctly. 'echo' is the command
+    # to print text to the terminal.
+    echo "Usage: $0 /path/to/directory"
+    # We then exit the script with a status code of 1, which conventionally
+    # indicates that an error occurred.
+    exit 1
+fi
+
+# We store the first argument provided by the user in a variable. '$1' is a
+# special variable that holds the first argument.
+COMPARE_DIR="$1"
+
+# This is our second safeguard. We check if the argument provided is actually a
+# directory. The '-d' flag in this test '[ -d ... ]' checks for a directory.
+# If the path does not exist or is not a directory, we can't proceed.
+if [ ! -d "$COMPARE_DIR" ]; then
+    # If the check fails, we inform the user that the provided path is not a
+    # valid directory and then exit.
+    echo "Error: '$COMPARE_DIR' is not a valid directory."
+    exit 1
+fi
+
+# --- CORE LOGIC: FIND AND DELETE MATCHING FILES ---
+
+echo "--- Starting File Comparison ---"
+echo "Comparing files in: $COMPARE_DIR"
+echo "Deleting matching files from: $CURRENT_DIR"
+echo "--------------------------------"
+
+# We use a 'for' loop to iterate over every single item in the directory
+# specified by the user. The '*' is a wildcard that means 'everything'.
+# The 'COMPARE_DIR/*' ensures we are looking inside the specified directory.
+for file_path in "$COMPARE_DIR"/*; do
+
+    # Inside the loop, for each item found, we first check if it's a file.
+    # The '-f' flag checks if the path points to a regular file. This prevents
+    # us from trying to match against sub-directories.
+    if [ -f "$file_path" ]; then
+
+        # If it is a file, we need to extract just the filename from its full
+        # path. For example, from '/path/to/some/file.txt', we only want
+        # 'file.txt'. The 'basename' command is perfect for this.
+        filename=$(basename "$file_path")
+
+        # Now we check if a file with that same name exists in our current
+        # directory. The path we check is constructed by combining the
+        # CURRENT_DIR variable (our safe, absolute path) with the filename.
+        if [ -f "$CURRENT_DIR/$filename" ]; then
+
+            # This is the final and most critical safeguard. Before deleting,
+            # we are absolutely certain that the file we are about to remove
+            # exists in the directory where the script was started.
+            echo "Match found. Deleting '$filename' from the current directory."
+
+            # The 'rm' command is used to remove (delete) files. We specify the
+            # full, absolute path to the file in the current directory to be
+            # absolutely sure we are deleting the correct file.
+            rm "$CURRENT_DIR/$filename"
+
+        fi
+    fi
+done
+
+echo "--------------------------------"
+echo "--- Operation Complete ---"
+
+# Exit with a status code of 0, which conventionally means the script ran
+# successfully without any errors.
+exit 0
+

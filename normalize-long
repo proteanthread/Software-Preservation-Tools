@@ -1,0 +1,173 @@
+#!/bin/bash
+# ==============================================================================
+# Long Filename Normalizer Script (normalize-long)
+#
+# ------------------------------------------------------------------------------
+#                            SCRIPT DOCUMENTATION
+# ------------------------------------------------------------------------------
+#
+# This document explains precisely what changes the `normalize-long` script
+# will and will not make to your computer's filesystem. Understanding this is
+# crucial for using the script safely and effectively.
+#
+# ---[ What the Script Affects ]---
+#
+#   * Target Location: This script operates ONLY within the single directory
+#     where it is run. It does NOT traverse subdirectories.
+#
+#   * Target Files: It will only process regular files. It will automatically
+#     skip over:
+#       - The script file itself (`normalize-long`).
+#       - Any "dotfiles" (hidden files that start with a period).
+#
+# ---[ What the Script Does NOT Do ]---
+#
+#   * It does NOT read or modify the *contents* of your files.
+#   * It does NOT delete any files or directories.
+#   * It does NOT move files between directories. Renamed files stay in place.
+#
+# ---[ The Renaming Process ]---
+#
+# The script now uses a single, consistent set of rules for all files.
+#
+#   1. Sanitization: URL/Unicode decoding, special characters to dashes, etc.
+#   2. Length Enforcement: Optional truncation based on the --max flag.
+#   3. Conflict Resolution: Appends a numeric suffix AFTER the extension
+#      (e.g., file.txt.2) if needed.
+#
+# ==============================================================================
+#                             SCRIPT USAGE
+# ==============================================================================
+#
+# This script now has multiple modes and options.
+#
+# ---[ Mode 1: Sanitation Only (Default) ]---
+#
+#   Usage: ./normalize-long
+#
+# ---[ Mode 2: Sanitation and Truncation ]---
+#
+#   Usage:
+#     ./normalize-long -m <#>
+#     ./normalize-long --max <#>
+#     ./normalize-long <#>
+#
+# WARNING:
+# This script PERMANENTLY renames files. It is highly recommended to
+# BACK UP your data or test this script in a copied directory first.
+# ==============================================================================
+
+# ---[ Script Configuration & Argument Parsing ]---
+
+MAX_FILENAME_LENGTH=""
+
+while (( "$#" )); do
+  case "$1" in
+    -m|--max)
+      if [ -n "$2" ] && [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+        MAX_FILENAME_LENGTH="$2"
+        shift 2
+      else
+        echo "Error: '$1' flag requires a positive number as its value." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      if [[ "$1" =~ ^[1-9][0-9]*$ ]]; then
+        MAX_FILENAME_LENGTH="$1"
+        shift
+        break
+      else
+        echo "Error: Invalid argument '$1'." >&2
+        echo "Usage: $0 [-m|--max <length>]" >&2
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+# ---[ Main Processing Loop ]---
+
+if [ -n "$MAX_FILENAME_LENGTH" ]; then
+    echo "Sanitation & Truncation mode enabled for regular files. Max length: $MAX_FILENAME_LENGTH"
+else
+    echo "Sanitation-Only mode enabled for regular files. No length limit will be enforced."
+fi
+echo "---"
+
+# This find command is restricted to the current directory ONLY.
+find . -maxdepth 1 -type f -print0 | while IFS= read -r -d $'\0' original_file_path; do
+    original_file_path="${original_file_path#./}"
+    file_name=$(basename "$original_file_path")
+
+    # --- 0. Filter Files to Skip ENTIRELY ---
+    if [ "$original_file_path" == "$(basename "$0")" ]; then
+        continue
+    fi
+    if [[ "$file_name" == .* ]]; then
+        continue
+    fi
+
+    # **CHANGE**: The special processing path for temporary files has been removed.
+    # All files that are not explicitly skipped above will now be processed
+    # by the main logic below.
+
+    # --- Regular Processing Path ---
+    basename="${file_name%.*}"
+    extension="${file_name##*.}"
+    if [[ "$extension" =~ ^[0-9]+$ ]] && [[ "$basename" == *.* ]]; then
+        new_basename="${basename%.*}"
+        new_extension="${basename##*.}"
+        basename="$new_basename"
+        extension="$new_extension"
+    elif [ "$basename" == "$file_name" ]; then
+        extension="dat"
+    fi
+
+    decoded_name=$(printf '%b' "${basename//%/\\x}")
+    decoded_ext=$(printf '%b' "${extension//%/\\x}")
+    ascii_name=$(echo "$decoded_name" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null)
+    ascii_ext=$(echo "$decoded_ext" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null)
+    lower_name="${ascii_name,,}"
+    lower_ext="${ascii_ext,,}"
+    dashed_name=$(echo "$lower_name" | sed 's/[^a-z0-9_]/-/g')
+    dashed_ext=$(echo "$lower_ext" | sed 's/[^a-z0-9_]/-/g')
+    cleaned_name=$(echo "$dashed_name" | sed 's/_-_/-/g')
+    cleaned_ext=$(echo "$dashed_ext" | sed 's/_-_/-/g')
+    squeezed_name=$(echo "$cleaned_name" | sed 's/--\+/-/g')
+    squeezed_ext=$(echo "$cleaned_ext" | sed 's/--\+/-/g')
+    squeezed_name=$(echo "$squeezed_name" | sed 's/__\+/_/g')
+    squeezed_ext=$(echo "$squeezed_ext" | sed 's/__\+/_/g')
+    trimmed_name=$(echo "$squeezed_name" | sed 's/^-//; s/-$//')
+    trimmed_ext=$(echo "$squeezed_ext" | sed 's/^-//; s/-$//')
+
+    new_ext="$trimmed_ext"
+    if [ -n "$MAX_FILENAME_LENGTH" ]; then
+        new_name="${trimmed_name:0:$MAX_FILENAME_LENGTH}"
+    else
+        new_name="$trimmed_name"
+    fi
+
+    if [ -z "$new_name" ]; then
+        echo "Skipping '$original_file_path': Filename became empty after sanitization."
+        continue
+    fi
+    
+    target_name="$new_name.$new_ext"
+    
+    final_name="$target_name"
+    counter=2
+    while [ -e "$final_name" ] && [ "$final_name" != "$original_file_path" ]; do
+        final_name="$target_name.$counter"
+        ((counter++))
+    done
+
+    if [ "$original_file_path" != "$final_name" ]; then
+         mv -v -- "$original_file_path" "$final_name"
+    fi
+done
+
+echo "---"
+echo "Normalization complete."
+# --- Script End ---
+
