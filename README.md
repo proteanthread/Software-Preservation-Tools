@@ -1,2 +1,16 @@
-# Software-Preservation
-just some simple tools to help preserve software for future reference and archival purposes. a work in progress.
+# Software Preservation and Archival Tools
+
+
+This collection of command-line utilities represents a dedicated and evolving toolkit for the preservation of digital software, ensuring its accessibility and usability for future reference and local archival purposes. What began as a set of simple tools is maturing into a more comprehensive, multi-stage workflow, although it remains a continual work in progress. Each script serves a distinct role in the archival process, from initial acquisition to final organization, providing a robust foundation for building clean, consistent, and durable software collections.
+
+The archival process begins with acquisition, handled by the ia-download script. This powerful tool provides a direct interface to the vast repository of the Internet Archive, giving the archivist precise control over the retrieval process. Users can construct detailed search queries, filter by specific media types and collections, and select exact file extensions for download. By automating the search and download of specific items, it serves as the primary gateway for bringing historical software into the local archival environment.
+
+Once files are acquired, they enter a crucial normalization and sanitization phase. This toolkit offers several specialized scripts for this purpose. For creating clean, modern, and web-friendly filenames, the sanitize and normalize-long scripts convert names to lowercase, replace ambiguous special characters with dashes, and handle complex character encodings. They also provide options for truncating filenames to a maximum length, ensuring compatibility across various filesystems. For projects requiring strict historical accuracy, the normalize script enforces the rigid MS-DOS 8.3 filename convention, converting names to uppercase and removing any characters that would be invalid on legacy systems. This distinction is vital for preserving software that depends on this older file structure.
+
+With standardized names, the next step is extraction, managed by the intelligent ia-extract script. Software is often stored in compressed formats like ZIP, 7Z, or ISO files. This utility is designed to unpack them intelligently; it analyzes an archive's contents to prevent the common issue of creating redundant, nested directories. It automatically sanitizes the names of the extracted files and can even find and recursively extract archives buried within other archives. For safety, a --dry-run mode allows the user to preview all actions without making any changes to the filesystem.
+
+Finally, the toolkit includes several utilities for ongoing maintenance and analysis, reflecting its "work in progress" nature. The cleanup script was developed as a one-time fix for a bug in a previous version, demonstrating the iterative improvement of the tools. The rematching script acts as a powerful deduplication aid, allowing a user to compare two directories and safely delete files in the current directory that have matching names in another, which is perfect for managing updated file sets. To assist in planning normalization strategies, the length script provides a statistical analysis of filename lengths within a directory, calculating the minimum, maximum, average, and median lengths to give the archivist a clear overview of the collection's characteristics.
+
+Together, these scripts form a cohesive, command-line-driven system that addresses the full lifecycle of digital software preservation—from acquisition and sanitization to extraction and long-term maintenance.
+
+More to come.
