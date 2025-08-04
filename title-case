@@ -1,0 +1,220 @@
+#!/bin/bash
+# ==============================================================================
+# Filename Standardizer Script (Advanced Mixed-Case Version 11.0)
+#
+# Description:
+#   This script renames files using a sophisticated, priority-based logic
+#   to correctly handle various filename styles. This version includes a
+#   critical fix to the placeholder logic to prevent corruption.
+#
+# User may still have to manually rename some files.
+#
+#
+# --- Logic Priority ---
+#
+# 1.  Passthrough Files: A list of exact filenames to be ignored.
+# 2.  Special Suffixes: If a filename ends in '-master', the basename is preserved.
+# 3.  Placeholder Protection: Dashed abbreviations are protected by a robust
+#     placeholder (`PLACEHOLDERABBREV...`) that is immune to word splitting.
+# 4.  Identifier Prefixes: A list of special words (e.g., 'bbd') that are
+#     treated as lowercase prefixes for catalog numbers.
+# 5.  Known Suffix Words: A list of common words (e.g., 'new') that are
+#     intelligently split from the end of identifiers.
+# 6.  Identifier Words: Words with letters and numbers are forced to lowercase.
+# 7.  Abbreviations: A list of known abbreviations are forced to ALL CAPS.
+# 8.  Advanced Conditional Case Formatting for "true words".
+#
+# ==============================================================================
+
+echo "Starting advanced filename standardization process (v11.0)..."
+echo "---"
+
+# --- Configuration: Exception Lists ---
+PASSTHROUGH_FILENAMES=(
+    "error.log"
+    "index.txt"
+)
+
+ABBREVIATIONS=(
+    "CD"
+    "PC"
+    "CGA"
+    "EGA"
+    "VGA"
+    "IBM"
+    "CD-ROM"
+    "MSDOS"
+    "BASIC"
+)
+
+# Add common English words here that might be attached to identifiers.
+# This helps the script know when to split a word like 'bbd04new'.
+KNOWN_WORDS=(
+    "new"
+    "best"
+    "samp"
+)
+
+# Add words here that should be treated as lowercase prefixes for identifiers.
+# This helps the script join 'Bbd 08' into 'bbd08'.
+IDENTIFIER_PREFIXES=(
+    "bbd"
+    "spc"
+    "softd"
+    "sofdpc"
+    "odm"
+)
+
+
+find . -maxdepth 1 -type f -not -path "./$(basename "$0")" -not -name ".*" -print0 |
+while IFS= read -r -d $'\0' full_path; do
+
+    original_file=$(basename "$full_path")
+
+    # --- 1. Passthrough Check ---
+    for passthrough in "${PASSTHROUGH_FILENAMES[@]}"; do
+        if [[ "${original_file,,}" == "$passthrough" ]]; then
+            continue 2
+        fi
+    done
+
+    # --- 2. Separate Basename and Extension ---
+    basename="${original_file%.*}"
+    extension="${original_file##*.}"
+    if [[ "$basename" == "$original_file" || -z "$basename" ]]; then
+        extension=""
+        [[ -z "$basename" ]] && basename="$original_file"
+    fi
+
+    # --- 3. Sanitize and Format the Basename ---
+
+    if [[ "${basename,,}" == *-master ]]; then
+        new_name="$basename"
+    else
+        # --- Main processing block for non-master files ---
+
+        placeholder_map=()
+        for i in "${!ABBREVIATIONS[@]}"; do
+            abbrev="${ABBREVIATIONS[$i]}"
+            if [[ "$abbrev" == *"-"* ]]; then
+                # *** FIX (v11.0): New placeholder is inert to sed processing. ***
+                placeholder="PLACEHOLDERABBREV${i}"
+                basename=$(echo "$basename" | sed "s/$abbrev/$placeholder/ig")
+                placeholder_map+=("$abbrev" "$placeholder")
+            fi
+        done
+
+        new_name=$(printf '%b' "${basename//%/\\x}")
+        new_name=$(echo "$new_name" | iconv -f UTF-8 -t ASCII//TRANSLIT -c)
+        new_name=$(echo "$new_name" | sed 's/[_.-]/ /g')
+        new_name=$(echo "$new_name" | sed -r 's/([a-z])([A-Z])/\1 \2/g')
+        
+        for known_word in "${KNOWN_WORDS[@]}"; do
+            new_name=$(echo "$new_name" | sed -E "s/([0-9])(${known_word})/\1 \2/ig")
+        done
+
+        new_name=$(echo "$new_name" | sed 's/  */ /g')
+
+        read -r -a words_array <<< "$new_name"
+
+        true_word_count=0
+        for word in "${words_array[@]}"; do
+            is_abbrev=false; is_prefix=false
+            for abbrev in "${ABBREVIATIONS[@]}"; do
+                if [[ "${word^^}" == "$abbrev" ]]; then is_abbrev=true; break; fi
+            done
+            for prefix in "${IDENTIFIER_PREFIXES[@]}"; do
+                if [[ "${word,,}" == "$prefix" ]]; then is_prefix=true; break; fi
+            done
+            # *** FIX (v11.0): Update placeholder format in check. ***
+            if [[ ! "$word" =~ [0-9] && "$is_abbrev" == false && "$is_prefix" == false && "$word" != PLACEHOLDERABBREV* ]]; then
+                ((true_word_count++))
+            fi
+        done
+
+        final_words=()
+        for ((i=0; i<${#words_array[@]}; i++)); do
+            word="${words_array[i]}"
+            
+            is_prefix=false
+            for prefix in "${IDENTIFIER_PREFIXES[@]}"; do
+                if [[ "${word,,}" == "$prefix" && $i+1 -lt ${#words_array[@]} ]]; then
+                    next_word="${words_array[i+1]}"
+                    if [[ "$next_word" =~ ^[0-9]+$ ]]; then
+                        final_words+=("${word,,}${next_word}"); ((i++)); is_prefix=true; break
+                    fi
+                fi
+            done
+            if [[ "$is_prefix" == true ]]; then continue; fi
+
+            if [[ "$word" =~ [a-zA-Z] && "$word" =~ [0-9] ]]; then
+                final_words+=("${word,,}"); continue
+            fi
+
+            is_abbrev=false
+            for abbrev in "${ABBREVIATIONS[@]}"; do
+                if [[ "${word^^}" == "$abbrev" ]]; then
+                    final_words+=("$abbrev"); is_abbrev=true; break
+                fi
+            done
+            if [[ "$is_abbrev" == true ]]; then continue; fi
+            
+            # *** FIX (v11.0): Update placeholder format in check. ***
+            if [[ "$word" == PLACEHOLDERABBREV* ]]; then
+                final_words+=("$word"); continue
+            fi
+
+            if [[ "$word" =~ ^[0-9]+$ ]]; then
+                final_words+=("$word"); continue
+            fi
+            
+            is_known_word=false
+            for known_word in "${KNOWN_WORDS[@]}"; do
+                if [[ "${word,,}" == "$known_word" ]]; then
+                    final_words+=("${word,,}"); is_known_word=true; break
+                fi
+            done
+            if [[ "$is_known_word" == true ]]; then continue; fi
+
+            if [[ "$true_word_count" -eq 1 ]]; then
+                final_words+=("${word^^}")
+            else
+                title_cased=$(echo "$word" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')
+                final_words+=("$title_cased")
+            fi
+        done
+
+        new_name=$(IFS=" "; echo "${final_words[*]}")
+        for ((i=0; i<${#placeholder_map[@]}; i+=2)); do
+            abbrev="${placeholder_map[i]}"
+            placeholder="${placeholder_map[i+1]}"
+            new_name=$(echo "$new_name" | sed "s/$placeholder/$abbrev/g")
+        done
+        new_name=$(echo "$new_name" | sed 's/^[ -]//;s/[ -]$//')
+    fi
+
+    # --- 4. Sanitize and Format the Extension ---
+    if [ -n "$extension" ]; then
+        clean_ext=$(echo "$extension" | sed 's/[^a-zA-Z0-9]//g')
+        if [[ "${clean_ext,,}" == "7z" ]]; then new_ext="7z"; else new_ext="${clean_ext^^}"; fi
+    else
+        new_ext=""
+    fi
+
+    # --- 5. Assemble Final Name and Handle Conflicts ---
+    if [ -z "$new_name" ]; then echo "Skipping '$original_file': Empty name."; continue; fi
+    target_name="${new_name}${new_ext:+.$new_ext}"
+    final_name="$target_name"
+    counter=1
+    while [ -e "$final_name" ] && [ "$final_name" != "$original_file" ]; do
+        ((counter++))
+        final_name="${new_name}${new_ext:+.$new_ext}.$counter"
+    done
+
+    # --- 6. Perform the Rename ---
+    if [ "$original_file" != "$final_name" ]; then mv -v -- "$original_file" "$final_name"; fi
+done
+
+echo "---"
+echo "Standardization complete."
+
