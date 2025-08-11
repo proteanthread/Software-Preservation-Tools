@@ -1,0 +1,157 @@
+#!/bin/bash
+# ==============================================================================
+#
+#   Advanced Filename Normalizer (Version 2.2 - Final)
+#
+#   Description:
+#   This script renames files and directories using a final, robust,
+#   priority-based rule set. This version includes advanced logic for handling
+#   abbreviations and complex number/separator grouping.
+#
+#   --- Rule Priority System (v2.2) ---
+#
+#   1.  **8.3 Short Basename Rule:** If a basename is 8 chars or less, it is
+#       made ALL UPPERCASE. Spaces are removed; dashes/underscores are kept.
+#
+#   2.  **Identifier Rule:** If a basename is 9+ chars and contains a pattern
+#       that is clearly a technical name, it is treated as an identifier.
+#       - Result: `all-lowercase-with-dashes`.
+#
+#   3.  **Advanced Title Case Rule:** If a basename is 9+ chars, it is
+#       processed by an advanced Title Case function that correctly handles
+#       number grouping, separators, and a list of defined abbreviations.
+#       - Result: `Title Case With Spaces` (and specific formatting).
+#
+#   4.  **Extension Casing:** Extensions are ALL UPPERCASE, except for '7z'.
+#
+# ==============================================================================
+
+# --- CONFIGURATION: ABBREVIATIONS LIST ---
+# Add any words here that should always be fully capitalized.
+# The script will match these case-insensitively.
+ABBREVIATIONS=(
+    "IBM" "CD-ROM" "ISO" "MSDOS" "PCDOS" "MS" "CD" "NEC" "VHD"
+)
+
+# A more robust function to convert a string to Title Case.
+title_case() {
+    local input="$1"
+    # --- Advanced Formatting Logic ---
+    # 1. Standardize all separators to spaces.
+    input=$(echo "$input" | sed -E 's/[_.-]/ /g' | tr -s ' ')
+    # 2. Insert spaces between letter/number boundaries to separate words.
+    input=$(echo "$input" | sed -E 's/([a-z])([A-Z])/\1 \2/g; s/([0-9])([a-zA-Z])/\1 \2/g; s/([a-zA-Z])([0-9])/\1 \2/g')
+    # 3. Squeeze spaces again after insertions.
+    input=$(echo "$input" | tr -s ' ')
+
+    # *** NEW (v2.2): Handle specific 'Cdrom' to 'CD-ROM' conversion. ***
+    # The 's/\<Cdrom\>/CD-ROM/ig' command does the following:
+    # s/.../.../   - The substitute command.
+    # \<Cdrom\>    - Matches the whole word 'Cdrom'. The \< and \> are word boundaries.
+    # CD-ROM       - The replacement string.
+    # ig           - 'i' for a case-insensitive match, 'g' to replace all occurrences.
+    input=$(echo "$input" | sed -E 's/\<Cdrom\>/CD-ROM/ig')
+
+    # 4. Capitalize the first letter of each word.
+    input=$(echo "$input" | sed -E 's/(^| )([a-z])/\1\U\2/g')
+
+    # 5. Handle specific number groupings.
+    #    - Join consecutive numbers with a period (e.g., "Win 3 11" -> "Win 3.11")
+    input=$(echo "$input" | sed -E ':a; s/([0-9]) ([0-9])/\1.\2/g; ta')
+    #    - Handle specific dash patterns (e.g., "3.00 55" -> "3.00-55")
+    input=$(echo "$input" | sed -E 's/([0-9]\.[0-9]{2}) ([0-9]{2})/\1-\2/g')
+
+
+    # 6. Capitalize all defined abbreviations.
+    local temp_result=""
+    read -r -a words <<< "$input"
+    for word in "${words[@]}"; do
+        is_abbrev=false
+        for abbrev in "${ABBREVIATIONS[@]}"; do
+            if [[ "${word^^}" == "$abbrev" ]]; then
+                temp_result+="$abbrev "
+                is_abbrev=true
+                break
+            fi
+        done
+        if [ "$is_abbrev" = false ]; then
+            temp_result+="$word "
+        fi
+    done
+    # Remove trailing space
+    echo "${temp_result% }"
+}
+
+# --- MAIN SCRIPT LOOP ---
+find . -maxdepth 1 -mindepth 1 -print0 | while IFS= read -r -d '' original_item; do
+    original_item="${original_item#./}"
+
+    if [ "$original_item" == "standardize" ]; then
+        continue
+    fi
+
+    basename="${original_item%.*}"
+    extension="${original_item##*.}"
+    if [ "$basename" == "$extension" ] && [ "$basename" == "$original_item" ]; then
+        extension=""
+    fi
+
+    new_basename=""
+    eval_basename=$(echo "$basename" | sed 's/ //g')
+    char_count=${#eval_basename}
+
+    # -- RULE 1: 8.3 SHORT BASENAME CHECK (Top Priority) --
+    if [ "$char_count" -le 8 ]; then
+        temp_name=$(echo "$basename" | sed 's/ //g')
+        new_basename="${temp_name^^}"
+    else
+        # -- LOGIC FOR LONG BASENAMES (Single Pass) --
+
+        # Rule 2: Identifier Check - Look for specific technical patterns.
+        if [[ "$basename" =~ -v[0-9] || "$basename" =~ -[0-9]{1,2}-[a-z]{3}-[0-9]{2} ]]; then
+            temp_name=$(echo "$basename" | sed -e 's/[ _]/-/g' -e 's/--\+/-/g')
+            new_basename="${temp_name,,}"
+        else
+            # Rule 3: Advanced Title Case - This is the default for all other long names.
+            new_basename=$(title_case "$basename")
+        fi
+    fi
+
+    # --- RULE 4: PROCESS EXTENSION (Top Priority) ---
+    new_extension=""
+    if [ -n "$extension" ]; then
+        if [[ "${extension,,}" == "7z" ]]; then
+            new_extension="7z"
+        else
+            new_extension="${extension^^}"
+        fi
+    fi
+
+    # --- ASSEMBLE AND FINALIZE ---
+    if [ -n "$new_extension" ]; then
+        target_name="$new_basename.$new_extension"
+    else
+        target_name="$new_basename"
+    fi
+
+    final_name="$target_name"
+    counter=1
+    while [ -e "$final_name" ] && [ "$final_name" != "$original_item" ]; do
+        ((counter++))
+        if [ -n "$new_extension" ]; then
+            final_name="$new_basename.$new_extension.$counter"
+        else
+            final_name="$new_basename.$counter"
+        fi
+    done
+
+    if [ "$original_item" != "$final_name" ]; then
+        mv -v -- "$original_item" "$final_name"
+    fi
+done
+
+echo ""
+echo "-------------------------------------"
+echo "Standardization process complete (v2.2)."
+echo "-------------------------------------"
+
